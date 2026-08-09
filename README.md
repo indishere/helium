@@ -13,9 +13,7 @@
 </div>
 
 # Kind Note from IND_is_Here
-> I fucking hate whoever wrote the CLAUDE.md/AGENTS.md of this project. It's understandable a bit but still crosses the line when you permanently ban AND publicly shame people (genuinely WTF) for contributing small things to helium with AI. Regardless, I DO NOT FUCKING CARE because it is OSS, and, as @torvalds once said if you don't like AI, just fork off, and that is EXACTLY what I'm doing and this is why this exists. 
-
-MY BROWSER, MAINTAINED BY ME, IN THE OPEN. (Hopefully no vulns or security issues arise)
+> I want the team at Helium to implement this feature I want from the code at the claude/ branch. It's rough work, review it before merging. 
 
 ## Downloads
 > [!NOTE]
