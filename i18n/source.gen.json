@@ -1105,6 +1105,18 @@
     "message": "Use Ctrl+S to toggle vertical tabs in Vertical layout"
   },
   {
+    "name": "IDS_SETTINGS_ZEN_MODE_VERTICAL_TAB_RAIL",
+    "source": "chrome/app/settings_strings.grdp",
+    "context": "Label for the toggle that keeps a narrow strip of tab icons on screen in zen mode.",
+    "message": "Always show tab icons"
+  },
+  {
+    "name": "IDS_SETTINGS_ZEN_MODE_VERTICAL_TAB_RAIL_DESCRIPTION",
+    "source": "chrome/app/settings_strings.grdp",
+    "context": "Description for the toggle that keeps a narrow strip of tab icons on screen in zen mode.",
+    "message": "Keep a narrow strip of tab icons at the edge of the window, and expand it when you hover over it"
+  },
+  {
     "name": "IDS_SETTINGS_CENTERED_LOCATION_BAR",
     "source": "chrome/app/settings_strings.grdp",
     "context": "Label for the toggle to use a centered address bar.",

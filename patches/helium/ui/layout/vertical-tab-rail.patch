@@ -1,0 +1,341 @@
+--- a/chrome/app/settings_strings.grdp
++++ b/chrome/app/settings_strings.grdp
+@@ -304,6 +304,12 @@
+     <message name="IDS_SETTINGS_TAB_STRIP_RIGHT_ALIGN" desc="Label for the toggle that displays vertical tabs on the right side of the browser window.">
+       Show vertical tabs on right side
+     </message>
++    <message name="IDS_SETTINGS_ZEN_MODE_VERTICAL_TAB_RAIL" desc="Label for the toggle that keeps a narrow strip of tab icons on screen in zen mode.">
++      Always show tab icons
++    </message>
++    <message name="IDS_SETTINGS_ZEN_MODE_VERTICAL_TAB_RAIL_DESCRIPTION" desc="Description for the toggle that keeps a narrow strip of tab icons on screen in zen mode.">
++      Keep a narrow strip of tab icons at the edge of the window, and expand it when you hover over it
++    </message>
+     <message name="IDS_SETTINGS_CENTERED_LOCATION_BAR" desc="Label for the toggle to use a centered address bar.">
+       Center the address bar
+     </message>
+--- a/chrome/browser/extensions/api/settings_private/prefs_util.cc
++++ b/chrome/browser/extensions/api/settings_private/prefs_util.cc
+@@ -224,6 +224,8 @@
+       settings_api::PrefType::kBoolean;
+   (*s_allowlist)[::prefs::kHeliumZenModeTopChromePinned] =
+       settings_api::PrefType::kBoolean;
++  (*s_allowlist)[::prefs::kHeliumZenModeVerticalTabRail] =
++      settings_api::PrefType::kBoolean;
+   (*s_allowlist)[::prefs::kHeliumNativeFrameMaterials] =
+       settings_api::PrefType::kBoolean;
+ 
+--- a/chrome/browser/resources/settings/appearance_page/appearance_page.html
++++ b/chrome/browser/resources/settings/appearance_page/appearance_page.html
+@@ -136,6 +136,12 @@
+               label="$i18n{zenModePinSidebar}">
+           </settings-toggle-button>
+           <settings-toggle-button class="hr"
++              pref="{{prefs.helium.browser.zen_mode_vertical_tab_rail}}"
++              hidden="[[!showVerticalSettings_]]"
++              label="$i18n{zenModeVerticalTabRail}"
++              sub-label="$i18n{zenModeVerticalTabRailDescription}">
++          </settings-toggle-button>
++          <settings-toggle-button class="hr"
+               pref="{{prefs.helium.browser.zen_mode_top_chrome_pinned}}"
+               label="$i18n{zenModePinToolbar}">
+           </settings-toggle-button>
+--- a/chrome/browser/ui/tabs/tab_strip_prefs.cc
++++ b/chrome/browser/ui/tabs/tab_strip_prefs.cc
+@@ -38,6 +38,7 @@
+   registry->RegisterBooleanPref(prefs::kHeliumZenMode, false);
+   registry->RegisterBooleanPref(prefs::kHeliumZenModeSidebarPinned, false);
+   registry->RegisterBooleanPref(prefs::kHeliumZenModeTopChromePinned, false);
++  registry->RegisterBooleanPref(prefs::kHeliumZenModeVerticalTabRail, true);
+ 
+   registry->RegisterBooleanPref(prefs::kVerticalTabsCollapsedState, false);
+   registry->RegisterIntegerPref(prefs::kVerticalTabsUncollapsedWidth,
+--- a/chrome/browser/ui/views/frame/browser_view.cc
++++ b/chrome/browser/ui/views/frame/browser_view.cc
+@@ -1155,6 +1155,10 @@
+       prefs::kHeliumZenModeTopChromePinned,
+       base::BindRepeating(&BrowserView::OnZenModeTopChromePinnedPrefChanged,
+                           base::Unretained(this)));
++  registrar_.Add(
++      prefs::kHeliumZenModeVerticalTabRail,
++      base::BindRepeating(&BrowserView::OnZenModeVerticalTabRailPrefChanged,
++                          base::Unretained(this)));
+   UpdateFullscreenAllowedFromPolicy(CanFullscreen());
+ 
+   WebUIContentsPreloadManager::GetInstance()->WarmupForBrowser(browser_.get());
+@@ -1651,9 +1655,22 @@
+   if (!ShouldDrawVerticalTabStrip()) {
+     return 0.f;
+   }
++  // The rail keeps the collapsed VTS on screen at all times, so there is
++  // nothing to slide in or out. Report it as fully revealed and let the
++  // region view's expand-on-hover handle widening it.
++  if (IsZenModeVerticalTabRailEnabled()) {
++    return 1.f;
++  }
+   return zen_side_chrome_animation_.GetCurrentValue();
+ }
+ 
++bool BrowserView::IsZenModeVerticalTabRailEnabled() const {
++  return zen_mode_enabled_ && ShouldDrawVerticalTabStrip() &&
++         !IsZenModeSideChromePinned() &&
++         browser_->profile()->GetPrefs()->GetBoolean(
++             prefs::kHeliumZenModeVerticalTabRail);
++}
++
+ bool BrowserView::IsZenModeSideChromePinned() const {
+   return zen_mode_enabled_ && browser_->profile()->GetPrefs()->GetBoolean(
+                                   prefs::kHeliumZenModeSidebarPinned);
+@@ -1764,6 +1781,27 @@
+   InvalidateLayout();
+ }
+ 
++void BrowserView::OnZenModeVerticalTabRailPrefChanged() {
++  if (!zen_mode_enabled_) {
++    return;
++  }
++
++  // Turning the rail off returns the floating VTS to the slide-in behaviour,
++  // so re-evaluate the reveal from where the cursor currently is. Turning it
++  // on collapses the strip down to the rail.
++  MaybeExpandVerticalTabStripForZenMode();
++  UpdateZenModeRevealFromCursor();
++
++  if (vertical_tab_strip_region_view_) {
++    vertical_tab_strip_region_view_->UpdateInteriorMargin();
++  }
++
++  if (multi_contents_view_) {
++    multi_contents_view_->MaybeUpdateContentsBorderAndOverlay();
++  }
++  InvalidateLayout();
++}
++
+ void BrowserView::OnZenModeSideChromePinnedPrefChanged() {
+   if (!zen_mode_enabled_) {
+     return;
+@@ -1812,6 +1850,8 @@
+ 
+ // Unpinned sidebar floats in zen mode, so we make sure that VTS is usable
+ // in that state by expanding it when it's attached, not pinned, and collapsed.
++// When the rail is enabled the floating VTS stays on screen collapsed instead,
++// so we drive it to the collapsed state rather than expanding it.
+ void BrowserView::MaybeExpandVerticalTabStripForZenMode() {
+   const bool vertical_initialized =
+       vertical_tab_strip_region_view_ &&
+@@ -1822,8 +1862,13 @@
+   }
+ 
+   auto* controller = tabs::VerticalTabStripStateController::From(browser_);
+-  if (controller && controller->IsCollapsed()) {
+-    controller->RequestCollapse(false);
++  if (!controller) {
++    return;
++  }
++
++  const bool should_collapse = IsZenModeVerticalTabRailEnabled();
++  if (controller->IsCollapsed() != should_collapse) {
++    controller->RequestCollapse(should_collapse);
+   }
+ }
+ 
+@@ -1839,6 +1884,15 @@
+     return;
+   }
+ 
++  // The rail drives the tab strip to its collapsed state for as long as zen
++  // mode is on. Remember what it was beforehand so leaving zen mode doesn't
++  // silently leave the user's tab strip collapsed.
++  auto* const vertical_state_controller =
++      tabs::VerticalTabStripStateController::From(browser_);
++  if (zen_mode_enabled && vertical_state_controller) {
++    collapse_state_before_zen_mode_ = vertical_state_controller->IsCollapsed();
++  }
++
+   zen_mode_enabled_ = zen_mode_enabled;
+   browser_->command_controller()->UpdateCommandEnabled(
+       IDC_TOGGLE_ZEN_MODE_TOP_CHROME_PIN, zen_mode_enabled);
+@@ -1861,6 +1915,16 @@
+   UpdateZenCollapseButtonVisibility();
+ 
+   if (!zen_mode_enabled_) {
++    // Restore whatever collapse state the tab strip had before zen mode.
++    if (collapse_state_before_zen_mode_.has_value()) {
++      if (vertical_state_controller &&
++          vertical_state_controller->IsCollapsed() !=
++              *collapse_state_before_zen_mode_) {
++        vertical_state_controller->RequestCollapse(
++            *collapse_state_before_zen_mode_);
++      }
++      collapse_state_before_zen_mode_.reset();
++    }
+     if (auto* frame_view = GetFrameView()) {
+       frame_view->SetCaptionButtonsOpacity(1.0f);
+     }
+--- a/chrome/browser/ui/views/frame/browser_view.h
++++ b/chrome/browser/ui/views/frame/browser_view.h
+@@ -436,6 +436,10 @@
+   bool IsZenModeSideChromePinned() const;
+   bool IsZenModeTopChromePinned() const;
+ 
++  // Returns true when the floating VTS in zen mode should keep a collapsed
++  // favicon rail on screen instead of sliding fully out of view.
++  bool IsZenModeVerticalTabRailEnabled() const;
++
+   // Toggles the side chrome (VTS) visibility in zen mode.
+   void ToggleZenModeSideChrome();
+   void ToggleZenModeTopChrome();
+@@ -947,6 +951,7 @@
+   // Zen mode helpers.
+   void OnZenModeSideChromePinnedPrefChanged();
+   void OnZenModeTopChromePinnedPrefChanged();
++  void OnZenModeVerticalTabRailPrefChanged();
+   void UpdateZenModeState();
+   void MaybeExpandVerticalTabStripForZenMode();
+   void UpdateZenCollapseButtonVisibility();
+@@ -1481,6 +1486,9 @@
+   base::OneShotTimer zen_cursor_exit_timer_;
+   std::optional<gfx::Point> zen_last_cursor_;
+   bool zen_mode_enabled_ = false;
++  // Tab strip collapse state captured on entry to zen mode, so that the rail
++  // collapsing the strip can be undone when zen mode is turned off.
++  std::optional<bool> collapse_state_before_zen_mode_;
+ 
+   mutable base::WeakPtrFactory<BrowserView> weak_ptr_factory_{this};
+ };
+--- a/chrome/browser/ui/views/frame/layout/browser_view_layout_delegate.h
++++ b/chrome/browser/ui/views/frame/layout/browser_view_layout_delegate.h
+@@ -56,6 +56,7 @@
+   virtual float GetTopChromeRevealRatio() const { return 1.f; }
+   virtual float GetSideChromeRevealRatio() const { return 1.f; }
+   virtual bool IsZenModeSideChromePinned() const { return false; }
++  virtual bool IsZenModeVerticalTabRailEnabled() const { return false; }
+   virtual bool IsZenModeTopChromePinned() const { return false; }
+   virtual gfx::NativeView GetHostViewForAnchoring() const = 0;
+   virtual bool HasFindBarController() const = 0;
+--- a/chrome/browser/ui/views/frame/layout/browser_view_layout_delegate_impl.cc
++++ b/chrome/browser/ui/views/frame/layout/browser_view_layout_delegate_impl.cc
+@@ -264,6 +264,10 @@
+   return browser_view_->IsZenModeSideChromePinned();
+ }
+ 
++bool BrowserViewLayoutDelegateImpl::IsZenModeVerticalTabRailEnabled() const {
++  return browser_view_->IsZenModeVerticalTabRailEnabled();
++}
++
+ int BrowserViewLayoutDelegateImpl::GetExtraInfobarOffset() const {
+ #if BUILDFLAG(IS_MAC)
+   auto* const controller = GetImmersiveModeController();
+--- a/chrome/browser/ui/views/frame/layout/browser_view_layout_delegate_impl.h
++++ b/chrome/browser/ui/views/frame/layout/browser_view_layout_delegate_impl.h
+@@ -47,6 +47,7 @@
+   float GetTopChromeRevealRatio() const override;
+   float GetSideChromeRevealRatio() const override;
+   bool IsZenModeSideChromePinned() const override;
++  bool IsZenModeVerticalTabRailEnabled() const override;
+   bool IsZenModeTopChromePinned() const override;
+   gfx::NativeView GetHostViewForAnchoring() const override;
+   bool HasFindBarController() const override;
+--- a/chrome/browser/ui/views/frame/layout/browser_view_tabbed_layout_impl.cc
++++ b/chrome/browser/ui/views/frame/layout/browser_view_tabbed_layout_impl.cc
+@@ -69,6 +69,9 @@
+ struct ZenModeLayoutState {
+   bool enabled = false;
+   bool floating_vertical_tab_strip = false;
++  // When true the floating VTS never slides off screen; it stays laid out at
++  // its collapsed width so a favicon rail is always reachable.
++  bool persistent_rail = false;
+   float top_chrome_ratio = 1.0f;
+   float side_chrome_ratio = 1.0f;
+   int vertical_tab_strip_padding = 0;
+@@ -77,7 +80,16 @@
+   bool TopChromeVisible() const { return top_chrome_ratio > 0.0f; }
+ 
+   bool ShouldLayoutVerticalTabStrip() const {
+-    return !floating_vertical_tab_strip || side_chrome_ratio > 0.0f;
++    return !floating_vertical_tab_strip || persistent_rail ||
++           side_chrome_ratio > 0.0f;
++  }
++
++  // Horizontal space the always-on-screen rail occupies, including the gap
++  // between it and the contents area.
++  int RailInset() const {
++    return persistent_rail ? VerticalTabStripRegionView::kCollapsedWidth +
++                                 2 * vertical_tab_strip_padding
++                           : 0;
+   }
+ };
+ 
+@@ -131,6 +143,7 @@
+     return state;
+   }
+ 
++  state.persistent_rail = delegate.IsZenModeVerticalTabRailEnabled();
+   state.vertical_tab_strip_padding = kZenModeVTSPadding;
+   const int revealed_top_padding =
+       std::max(0, GetGenericFrameRadius() -
+@@ -895,7 +908,8 @@
+           params.visual_client_area.y() + top_offset +
+               zen.vertical_tab_strip_top_padding,
+           vertical_tab_strip_width, vertical_tab_strip_height};
+-      if (zen.floating_vertical_tab_strip) {
++      // The rail is always on screen, so it never slides.
++      if (zen.floating_vertical_tab_strip && !zen.persistent_rail) {
+         vertical_tab_strip_bounds = SlideBoundsFromSide(
+             vertical_tab_strip_bounds, params.visual_client_area,
+             zen.side_chrome_ratio, vertical_right_aligned);
+@@ -915,6 +929,11 @@
+         }
+         params.InsetHorizontal(inset_amount,
+                                /*leading=*/!vertical_right_aligned);
++      } else if (zen.persistent_rail) {
++        // Reserve only the collapsed rail. Expanding on hover then floats over
++        // the contents instead of reflowing the page.
++        params.InsetHorizontal(zen.RailInset(),
++                               /*leading=*/!vertical_right_aligned);
+       }
+ 
+       // Let the vertical tab strip animate out over the content.
+@@ -927,11 +946,15 @@
+         clip_content_for_animation =
+             clip_content_for_animation || vertical_tab_strip_resize_animation;
+         InsetHorizontal(unclipped_contents_region,
+-                        VerticalTabStripRegionView::kCollapsedWidth,
++                        zen.persistent_rail
++                            ? zen.RailInset()
++                            : VerticalTabStripRegionView::kCollapsedWidth,
+                         !vertical_right_aligned);
+       } else {
+         InsetHorizontal(unclipped_contents_region,
+-                        horizontal_layout.vertical_tab_strip_width,
++                        zen.persistent_rail
++                            ? zen.RailInset()
++                            : horizontal_layout.vertical_tab_strip_width,
+                         !vertical_right_aligned);
+       }
+     }
+--- a/chrome/browser/ui/webui/settings/settings_localized_strings_provider.cc
++++ b/chrome/browser/ui/webui/settings/settings_localized_strings_provider.cc
+@@ -580,6 +580,9 @@
+       {"browserLayoutCompact", IDS_SETTINGS_BROWSER_LAYOUT_COMPACT},
+       {"browserLayoutVertical", IDS_SETTINGS_BROWSER_LAYOUT_VERTICAL},
+       {"tabStripRightAlign", IDS_SETTINGS_TAB_STRIP_RIGHT_ALIGN},
++      {"zenModeVerticalTabRail", IDS_SETTINGS_ZEN_MODE_VERTICAL_TAB_RAIL},
++      {"zenModeVerticalTabRailDescription",
++       IDS_SETTINGS_ZEN_MODE_VERTICAL_TAB_RAIL_DESCRIPTION},
+       {"browserZenMode", IDS_SETTINGS_BROWSER_ZEN_MODE},
+       {"browserZenModeDescription", IDS_SETTINGS_BROWSER_ZEN_MODE_DESCRIPTION},
+       {"zenModePinSidebar", IDS_SETTINGS_ZEN_PIN_SIDEBAR},
+--- a/chrome/common/pref_names.h
++++ b/chrome/common/pref_names.h
+@@ -642,6 +642,11 @@
+ inline constexpr char kHeliumZenModeTopChromePinned[] =
+     "helium.browser.zen_mode_top_chrome_pinned";
+ 
++// A boolean pref set to true if the floating VTS in zen mode should leave a
++// collapsed favicon rail on screen instead of sliding fully out of view.
++inline constexpr char kHeliumZenModeVerticalTabRail[] =
++    "helium.browser.zen_mode_vertical_tab_rail";
++
+ // A boolean pref set to true if the address bar should be centered.
+ // When false, the address bar uses the full available width.
+ inline constexpr char kHeliumCenteredLocationBar[] =

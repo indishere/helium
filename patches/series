@@ -330,3 +330,4 @@ helium/ui/fix-windows-ui-position.patch
 helium/ui/native-frame-materials.patch
 helium/ui/page-zoom-indicator.patch
 helium/ui/helium-noise-page-info.patch
+helium/ui/layout/vertical-tab-rail.patch
