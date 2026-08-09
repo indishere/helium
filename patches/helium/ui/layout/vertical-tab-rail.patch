@@ -45,7 +45,7 @@
    registry->RegisterBooleanPref(prefs::kHeliumZenMode, false);
    registry->RegisterBooleanPref(prefs::kHeliumZenModeSidebarPinned, false);
    registry->RegisterBooleanPref(prefs::kHeliumZenModeTopChromePinned, false);
-+  registry->RegisterBooleanPref(prefs::kHeliumZenModeVerticalTabRail, false);
++  registry->RegisterBooleanPref(prefs::kHeliumZenModeVerticalTabRail, true);
  
    registry->RegisterBooleanPref(prefs::kVerticalTabsCollapsedState, false);
    registry->RegisterIntegerPref(prefs::kVerticalTabsUncollapsedWidth,
@@ -62,16 +62,13 @@
    UpdateFullscreenAllowedFromPolicy(CanFullscreen());
  
    WebUIContentsPreloadManager::GetInstance()->WarmupForBrowser(browser_.get());
-@@ -1651,9 +1655,22 @@
+@@ -1651,9 +1655,19 @@
    if (!ShouldDrawVerticalTabStrip()) {
      return 0.f;
    }
-+  // The rail keeps the collapsed VTS on screen at all times, so there is
-+  // nothing to slide in or out. Report it as fully revealed and let the
-+  // region view's expand-on-hover handle widening it.
-+  if (IsZenModeVerticalTabRailEnabled()) {
-+    return 1.f;
-+  }
++  // In rail mode this ratio drives the strip's width between its collapsed and
++  // uncollapsed widths rather than sliding it on and off screen, so it is still
++  // the live animation value.
    return zen_side_chrome_animation_.GetCurrentValue();
  }
  
@@ -85,7 +82,7 @@
  bool BrowserView::IsZenModeSideChromePinned() const {
    return zen_mode_enabled_ && browser_->profile()->GetPrefs()->GetBoolean(
                                    prefs::kHeliumZenModeSidebarPinned);
-@@ -1764,6 +1781,27 @@
+@@ -1764,6 +1778,27 @@
    InvalidateLayout();
  }
  
@@ -113,7 +110,7 @@
  void BrowserView::OnZenModeSideChromePinnedPrefChanged() {
    if (!zen_mode_enabled_) {
      return;
-@@ -1812,6 +1850,8 @@
+@@ -1812,6 +1847,8 @@
  
  // Unpinned sidebar floats in zen mode, so we make sure that VTS is usable
  // in that state by expanding it when it's attached, not pinned, and collapsed.
@@ -122,7 +119,7 @@
  void BrowserView::MaybeExpandVerticalTabStripForZenMode() {
    const bool vertical_initialized =
        vertical_tab_strip_region_view_ &&
-@@ -1822,8 +1862,13 @@
+@@ -1822,8 +1859,13 @@
    }
  
    auto* controller = tabs::VerticalTabStripStateController::From(browser_);
@@ -138,7 +135,7 @@
    }
  }
  
-@@ -1839,6 +1884,18 @@
+@@ -1839,6 +1881,18 @@
      return;
    }
  
@@ -157,7 +154,7 @@
    zen_mode_enabled_ = zen_mode_enabled;
    browser_->command_controller()->UpdateCommandEnabled(
        IDC_TOGGLE_ZEN_MODE_TOP_CHROME_PIN, zen_mode_enabled);
-@@ -1861,6 +1918,23 @@
+@@ -1861,6 +1915,23 @@
    UpdateZenCollapseButtonVisibility();
  
    if (!zen_mode_enabled_) {
@@ -181,6 +178,20 @@
      if (auto* frame_view = GetFrameView()) {
        frame_view->SetCaptionButtonsOpacity(1.0f);
      }
+@@ -1908,6 +1979,13 @@
+     return false;
+   }
+ 
++  // The rail sits against the window edge and is never slid away, so there is
++  // no gap beside it to escape through. Treating the padding as an exit would
++  // fight the reveal trigger occupying the same pixels.
++  if (IsZenModeVerticalTabRailEnabled()) {
++    return false;
++  }
++
+   const gfx::Rect vts_bounds = views::View::ConvertRectToTarget(
+       vertical_tab_strip_region_view_->parent(), this,
+       vertical_tab_strip_region_view_->bounds());
 --- a/chrome/browser/ui/views/frame/browser_view.h
 +++ b/chrome/browser/ui/views/frame/browser_view.h
 @@ -436,6 +436,10 @@
@@ -286,7 +297,30 @@
    state.vertical_tab_strip_padding = kZenModeVTSPadding;
    const int revealed_top_padding =
        std::max(0, GetGenericFrameRadius() -
-@@ -895,7 +908,8 @@
+@@ -874,6 +887,22 @@
+         last_vertical_tab_strip_width_ = vertical_tab_strip_width;
+       }
+ 
++      // In rail mode the strip is permanently laid out and the zen side reveal
++      // widens it in place instead of sliding it in. The tab strip stays in its
++      // collapsed state throughout: TabView::IsInExpandOnHover() keys off the
++      // width it is laid out at, so tabs pick up their titles as it grows and
++      // nothing is written back to the collapse pref.
++      if (zen.persistent_rail) {
++        const int collapsed_width =
++            VerticalTabStripRegionView::kCollapsedWidth;
++        const int expanded_width = std::max(
++            collapsed_width,
++            views().vertical_tab_strip_region_view->uncollapsed_width());
++        vertical_tab_strip_width =
++            collapsed_width + ScaleExtent(expanded_width - collapsed_width,
++                                          zen.side_chrome_ratio);
++      }
++
+       const int vertical_tab_strip_x =
+           vertical_right_aligned
+               ? params.visual_client_area.right() -
+@@ -895,7 +924,8 @@
            params.visual_client_area.y() + top_offset +
                zen.vertical_tab_strip_top_padding,
            vertical_tab_strip_width, vertical_tab_strip_height};
@@ -296,7 +330,7 @@
          vertical_tab_strip_bounds = SlideBoundsFromSide(
              vertical_tab_strip_bounds, params.visual_client_area,
              zen.side_chrome_ratio, vertical_right_aligned);
-@@ -915,6 +929,11 @@
+@@ -915,6 +945,11 @@
          }
          params.InsetHorizontal(inset_amount,
                                 /*leading=*/!vertical_right_aligned);
@@ -308,7 +342,7 @@
        }
  
        // Let the vertical tab strip animate out over the content.
-@@ -927,11 +946,15 @@
+@@ -927,11 +962,15 @@
          clip_content_for_animation =
              clip_content_for_animation || vertical_tab_strip_resize_animation;
          InsetHorizontal(unclipped_contents_region,
