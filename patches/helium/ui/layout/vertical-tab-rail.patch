@@ -1,6 +1,6 @@
 --- a/chrome/app/settings_strings.grdp
 +++ b/chrome/app/settings_strings.grdp
-@@ -304,6 +304,12 @@
+@@ -295,6 +295,12 @@
      <message name="IDS_SETTINGS_TAB_STRIP_RIGHT_ALIGN" desc="Label for the toggle that displays vertical tabs on the right side of the browser window.">
        Show vertical tabs on right side
      </message>
@@ -21,9 +21,9 @@
        settings_api::PrefType::kBoolean;
 +  (*s_allowlist)[::prefs::kHeliumZenModeVerticalTabRail] =
 +      settings_api::PrefType::kBoolean;
-   (*s_allowlist)[::prefs::kHeliumNativeFrameMaterials] =
-       settings_api::PrefType::kBoolean;
  
+   // Miscellaneous
+   (*s_allowlist)[::embedder_support::kAlternateErrorPagesEnabled] =
 --- a/chrome/browser/resources/settings/appearance_page/appearance_page.html
 +++ b/chrome/browser/resources/settings/appearance_page/appearance_page.html
 @@ -136,6 +136,12 @@
@@ -45,7 +45,7 @@
    registry->RegisterBooleanPref(prefs::kHeliumZenMode, false);
    registry->RegisterBooleanPref(prefs::kHeliumZenModeSidebarPinned, false);
    registry->RegisterBooleanPref(prefs::kHeliumZenModeTopChromePinned, false);
-+  registry->RegisterBooleanPref(prefs::kHeliumZenModeVerticalTabRail, true);
++  registry->RegisterBooleanPref(prefs::kHeliumZenModeVerticalTabRail, false);
  
    registry->RegisterBooleanPref(prefs::kVerticalTabsCollapsedState, false);
    registry->RegisterIntegerPref(prefs::kVerticalTabsUncollapsedWidth,
@@ -138,7 +138,7 @@
    }
  }
  
-@@ -1839,6 +1884,15 @@
+@@ -1839,6 +1884,18 @@
      return;
    }
  
@@ -149,25 +149,35 @@
 +      tabs::VerticalTabStripStateController::From(browser_);
 +  if (zen_mode_enabled && vertical_state_controller) {
 +    collapse_state_before_zen_mode_ = vertical_state_controller->IsCollapsed();
++    rail_collapsed_tab_strip_for_zen_mode_ =
++        browser_->profile()->GetPrefs()->GetBoolean(
++            prefs::kHeliumZenModeVerticalTabRail);
 +  }
 +
    zen_mode_enabled_ = zen_mode_enabled;
    browser_->command_controller()->UpdateCommandEnabled(
        IDC_TOGGLE_ZEN_MODE_TOP_CHROME_PIN, zen_mode_enabled);
-@@ -1861,6 +1915,16 @@
+@@ -1861,6 +1918,23 @@
    UpdateZenCollapseButtonVisibility();
  
    if (!zen_mode_enabled_) {
 +    // Restore whatever collapse state the tab strip had before zen mode.
-+    if (collapse_state_before_zen_mode_.has_value()) {
-+      if (vertical_state_controller &&
-+          vertical_state_controller->IsCollapsed() !=
-+              *collapse_state_before_zen_mode_) {
++    if (collapse_state_before_zen_mode_.has_value() &&
++        vertical_state_controller) {
++      // Only undo the rail's own collapse. If the strip is no longer in the
++      // state the rail left it in, the user changed it deliberately while zen
++      // mode was on and that choice wins.
++      const bool rail_state_intact =
++          !rail_collapsed_tab_strip_for_zen_mode_ ||
++          vertical_state_controller->IsCollapsed();
++      if (rail_state_intact && vertical_state_controller->IsCollapsed() !=
++                                   *collapse_state_before_zen_mode_) {
 +        vertical_state_controller->RequestCollapse(
 +            *collapse_state_before_zen_mode_);
 +      }
-+      collapse_state_before_zen_mode_.reset();
 +    }
++    collapse_state_before_zen_mode_.reset();
++    rail_collapsed_tab_strip_for_zen_mode_ = false;
      if (auto* frame_view = GetFrameView()) {
        frame_view->SetCaptionButtonsOpacity(1.0f);
      }
@@ -192,13 +202,16 @@
    void UpdateZenModeState();
    void MaybeExpandVerticalTabStripForZenMode();
    void UpdateZenCollapseButtonVisibility();
-@@ -1481,6 +1486,9 @@
+@@ -1481,6 +1486,12 @@
    base::OneShotTimer zen_cursor_exit_timer_;
    std::optional<gfx::Point> zen_last_cursor_;
    bool zen_mode_enabled_ = false;
 +  // Tab strip collapse state captured on entry to zen mode, so that the rail
 +  // collapsing the strip can be undone when zen mode is turned off.
 +  std::optional<bool> collapse_state_before_zen_mode_;
++  // Whether the rail was the thing that collapsed the strip on zen entry, so
++  // a deliberate change made during zen mode isn't undone on the way out.
++  bool rail_collapsed_tab_strip_for_zen_mode_ = false;
  
    mutable base::WeakPtrFactory<BrowserView> weak_ptr_factory_{this};
  };
@@ -315,7 +328,7 @@
      }
 --- a/chrome/browser/ui/webui/settings/settings_localized_strings_provider.cc
 +++ b/chrome/browser/ui/webui/settings/settings_localized_strings_provider.cc
-@@ -580,6 +580,9 @@
+@@ -577,6 +577,9 @@
        {"browserLayoutCompact", IDS_SETTINGS_BROWSER_LAYOUT_COMPACT},
        {"browserLayoutVertical", IDS_SETTINGS_BROWSER_LAYOUT_VERTICAL},
        {"tabStripRightAlign", IDS_SETTINGS_TAB_STRIP_RIGHT_ALIGN},
@@ -327,7 +340,7 @@
        {"zenModePinSidebar", IDS_SETTINGS_ZEN_PIN_SIDEBAR},
 --- a/chrome/common/pref_names.h
 +++ b/chrome/common/pref_names.h
-@@ -642,6 +642,11 @@
+@@ -632,6 +632,11 @@
  inline constexpr char kHeliumZenModeTopChromePinned[] =
      "helium.browser.zen_mode_top_chrome_pinned";
  
